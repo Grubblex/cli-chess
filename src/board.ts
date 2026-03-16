@@ -19,7 +19,7 @@ export class BoardVisualEngine {
 	}
 
 	public updateBoard(board: Board) {
-		console.clear();
+		/*console.clear();*/
 
 		for (let row = 0; row < 8; row++) {
 			const renderedLines: string[] = [];
