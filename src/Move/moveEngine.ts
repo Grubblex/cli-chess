@@ -2,6 +2,7 @@ import prompts from "prompts";
 import type { Board } from "../board.js";
 import { PieceTypeToIcon, type Piece } from "../pieces.js";
 import { bishopDirections, kingMoves, knightMoves, queenDirections, rookDirections } from "./moveSets.js";
+import createAudioPlayer from "../../audio/player.js";
 
 type Square = [row: number, col: number];
 type Target = Square;
@@ -11,6 +12,8 @@ type Move = [Target, Destination];
 type MoveSet = [x: number, y: number][];
 
 export class MoveEngine {
+
+	private audio = createAudioPlayer();
 
 	private lookupTable: Record<string, string> = {
 			a:"0",
@@ -62,6 +65,7 @@ export class MoveEngine {
 		}
 
 		this.applyMove(board, pieceToMove, start, end);
+		this.moveRecord.push(moveString);
 
 		await this.checkForPromotion(board, pieceToMove);
 
@@ -72,8 +76,6 @@ export class MoveEngine {
 		} else if (this.isKingCheck(board, enemyPlayer)) {
 			console.log("King is checked!");
 		}
-
-		this.moveRecord.push(moveString);
 
 		console.log(this.moveRecord);
 		return board;
@@ -121,23 +123,19 @@ export class MoveEngine {
 		board: Board,
 		piece: Piece,
 		start: Target,
-		end: Destination
+		end: Destination,
+		playSound = true
 	): void {
 		const targetSquare = board[end[0]]![end[1]];
 		const isCastling = piece.type === "king" && Math.abs(end[1] - start[1]) === 2;
+		const isEnPassant = this.isEnPassantMove(board, piece, start, end);
+		const isCapture = (targetSquare !== null && targetSquare!.color !== piece.color) || isEnPassant;
 
-		// en passant
-		if (piece.type === "pawn" && start[1] !== end[1] && targetSquare === null) {
-
-			const capturedPawn = board[start[0]]![end[1]];
-
-			if (capturedPawn && capturedPawn.type === "pawn" && capturedPawn.color !== piece.color) {
-				console.log("En passant");
-				board[start[0]]![end[1]] = null;
-			}
+		if (isEnPassant) {
+			board[start[0]]![end[1]] = null;
 		}
 
-		// normal moves
+		// normal move
 		board[end[0]]![end[1]] = piece;
 		board[start[0]]![start[1]] = null;
 
@@ -145,9 +143,18 @@ export class MoveEngine {
 		piece.col = end[1];
 		piece.isFirstMove = false;
 
-		// Castle
+		if (playSound) {
+			if (isCastling) {
+				this.audio.castle();
+			} else if (isCapture) {
+				this.audio.capture();
+			} else {
+				this.audio.move();
+			}
+		}
+
+		// castle
 		if (isCastling) {
-			// short castle king f1
 			if (end[1] === 6) {
 				const rook = board[end[0]]![7];
 
@@ -162,7 +169,6 @@ export class MoveEngine {
 				rook.isFirstMove = false;
 			}
 
-			// long castle king c1
 			if (end[1] === 2) {
 				const rook = board[end[0]]![0];
 
@@ -204,6 +210,31 @@ export class MoveEngine {
 			default:
 				return [];
 		}
+	}
+
+	private isEnPassantMove(
+		board: Board,
+		piece: Piece,
+		start: Square,
+		end: Square
+	): boolean {
+		if (piece.type !== "pawn") return false;
+		if (start[1] === end[1]) return false;
+		if (board[end[0]]![end[1]] !== null) return false;
+
+		const lastEnemyMove = this.moveRecord.at(-1);
+		if (!lastEnemyMove) return false;
+
+		const [lastStart, lastEnd] = this.translateMove(lastEnemyMove);
+		const lastPiece = board[lastEnd[0]]![lastEnd[1]];
+
+		return !!(
+			lastPiece?.type === "pawn" &&
+			lastPiece.color !== piece.color &&
+			Math.abs(lastEnd[0] - lastStart[0]) === 2 &&
+			lastEnd[0] === start[0] &&
+			lastEnd[1] === end[1]
+		);
 	}
 
 	private isInsideBoard(row: number, col: number): boolean {
@@ -307,26 +338,37 @@ export class MoveEngine {
 
 	private generatePawnMoves(board: Board, piece: Piece): Square[] {
 		const moves: Square[] = [];
-		const direction = piece.color === 'white' ? -1 : 1;
+		const direction = piece.color === "white" ? -1 : 1;
 
 		const oneStepRow = piece.row + direction;
 		const twoStepRow = piece.row + 2 * direction;
 
-		if (this.isInsideBoard(oneStepRow, piece.col) && board[oneStepRow]![piece.col] === null)
-			{
-				moves.push([oneStepRow, piece.col]);
+		// 1 square forward
+		if (
+			this.isInsideBoard(oneStepRow, piece.col) &&
+			board[oneStepRow]![piece.col] === null
+		) {
+			moves.push([oneStepRow, piece.col]);
 
-				// 2 Steps on first move
-				if (piece.isFirstMove && board[twoStepRow]![piece.col] === null	
-				) {
-					moves.push([twoStepRow, piece.col]);
-				}
+			// 2 squares forward
+			if (
+				piece.isFirstMove &&
+				this.isInsideBoard(twoStepRow, piece.col) &&
+				board[twoStepRow]![piece.col] === null
+			) {
+				moves.push([twoStepRow, piece.col]);
 			}
+		}
+
 		// strike left
 		const leftCol = piece.col - 1;
 		if (this.isInsideBoard(oneStepRow, leftCol)) {
-			const target = board[oneStepRow]![leftCol]!;
-			if (target !== null && target.color !== piece.color) {
+			const target = board[oneStepRow]![leftCol];
+
+			if (
+				(target !== null && target!.color !== piece.color) ||
+				this.isEnPassantMove(board, piece, [piece.row, piece.col], [oneStepRow, leftCol])
+			) {
 				moves.push([oneStepRow, leftCol]);
 			}
 		}
@@ -334,34 +376,15 @@ export class MoveEngine {
 		// strike right
 		const rightCol = piece.col + 1;
 		if (this.isInsideBoard(oneStepRow, rightCol)) {
-			const target = board[oneStepRow]![rightCol]!;
-			if (target !== null && target.color !== piece.color) {
+			const target = board[oneStepRow]![rightCol];
+
+			if (
+				(target !== null && target!.color !== piece.color) ||
+				this.isEnPassantMove(board, piece, [piece.row, piece.col], [oneStepRow, rightCol])
+			) {
 				moves.push([oneStepRow, rightCol]);
 			}
 		}
-		// en passant
-		if (piece.row === 4 || piece.row === 3) {
-			
-			const lastEnemyMove = this.moveRecord.at(-1);
-			if (!lastEnemyMove) {
-				return moves;
-			}
-			const [start, end] = this.translateMove(lastEnemyMove);
-
-			const lastPiece = board[end[0]]![end[1]];
-
-			if (
-				lastPiece?.type === "pawn" &&
-				lastPiece.color !== piece.color &&
-				Math.abs(end[0] - start[0]) === 2 &&
-				end[0] === piece.row &&
-				Math.abs(end[1] - piece.col) === 1
-			) {
-				const direction = piece.color === "white" ? -1 : 1;
-				moves.push([piece.row + direction, end[1]]);
-			}
-		}
-
 
 		return moves;
 	}
@@ -416,14 +439,14 @@ export class MoveEngine {
 			const kingStep1 = simulatedBoard1[king.row]![king.col];
 
 			if (kingStep1) {
-				this.applyMove(simulatedBoard1, kingStep1, start, [row, 5]);
+				this.applyMove(simulatedBoard1, kingStep1, start, [row, 5], false);
 
 				if (!this.isKingCheck(simulatedBoard1, king.color)) {
 					const simulatedBoard2 = board.map(row => row.map(square => (square ? { ...square } : null)));
 					const kingStep2 = simulatedBoard2[king.row]![king.col];
 
 					if (kingStep2) {
-						this.applyMove(simulatedBoard2, kingStep2, start, [row, 6]);
+						this.applyMove(simulatedBoard2, kingStep2, start, [row, 6], false);
 
 						if (!this.isKingCheck(simulatedBoard2, king.color)) {
 							moves.push([row, 6]);
@@ -448,14 +471,14 @@ export class MoveEngine {
 			const kingStep1 = simulatedBoard1[king.row]![king.col];
 
 			if (kingStep1) {
-				this.applyMove(simulatedBoard1, kingStep1, start, [row, 3]);
+				this.applyMove(simulatedBoard1, kingStep1, start, [row, 3], false);
 
 				if (!this.isKingCheck(simulatedBoard1, king.color)) {
 					const simulatedBoard2 = board.map(row => row.map(square => (square ? { ...square } : null)));
 					const kingStep2 = simulatedBoard2[king.row]![king.col];
 
 					if (kingStep2) {
-						this.applyMove(simulatedBoard2, kingStep2, start, [row, 2]);
+						this.applyMove(simulatedBoard2, kingStep2, start, [row, 2], false);
 
 						if (!this.isKingCheck(simulatedBoard2, king.color)) {
 							moves.push([row, 2]);
@@ -474,7 +497,7 @@ export class MoveEngine {
 
 			const simulatedBoard = board.map(row => row.map(square => square ? { ...square } : null));
 			const simulatedPiece = simulatedBoard[piece.row]![piece.col]!;
-			this.applyMove(simulatedBoard, simulatedPiece, [piece.row, piece.col], move);
+			this.applyMove(simulatedBoard, simulatedPiece, [piece.row, piece.col], move, false);
 
 			if(!this.isKingCheck(simulatedBoard, currentPlayer)) {
 				legalMoves.push(move);
