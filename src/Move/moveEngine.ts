@@ -199,12 +199,21 @@ export class MoveEngine {
 		}
 		// en passant
 		if (piece.row === 4 || piece.row === 3) {
-			const lastEnemyMove = this.moveRecord.slice(-1)[0]!;
+			
+			const lastEnemyMove = this.moveRecord.at(-1);
+			if (!lastEnemyMove) {
+				return moves;
+			}
 			const [start, end] = this.translateMove(lastEnemyMove);
 
 			const lastPiece = board[end[0]]![end[1]];
 
-			if ( lastPiece?.type === "pawn" && Math.abs(end[0] - start[0]) === 2 && end[0] === piece.row && Math.abs(end[1] - piece.col) === 1
+			if (
+				lastPiece?.type === "pawn" &&
+				lastPiece.color !== piece.color &&
+				Math.abs(end[0] - start[0]) === 2 &&
+				end[0] === piece.row &&
+				Math.abs(end[1] - piece.col) === 1
 			) {
 				const direction = piece.color === "white" ? -1 : 1;
 				moves.push([piece.row + direction, end[1]]);
@@ -232,7 +241,87 @@ export class MoveEngine {
 				moves.push([newRow, newCol]);
 			}
 		}
+
+		this.addCastlingMoves(board, piece, moves);
+
 		return moves;
+	}
+
+	private addCastlingMoves(board: Board, king: Piece, moves: Square[]): void {
+		if (king.type !== "king" || !king.isFirstMove) {
+			return;
+		}
+
+		// König darf nicht im Schach stehen
+		if (this.isKingCheck(board, king.color)) {
+			return;
+		}
+
+		const row = king.row;
+		const start: Square = [king.row, king.col];
+
+		// kurze Rochade
+		const kingsideRook = board[row]![7];
+		if (
+			kingsideRook &&
+			kingsideRook.type === "rook" &&
+			kingsideRook.color === king.color &&
+			kingsideRook.isFirstMove &&
+			board[row]![5] === null &&
+			board[row]![6] === null
+		) {
+			const simulatedBoard1 = board.map(row => row.map(square => (square ? { ...square } : null)));
+			const kingStep1 = simulatedBoard1[king.row]![king.col];
+
+			if (kingStep1) {
+				this.applyMove(simulatedBoard1, kingStep1, start, [row, 5]);
+
+				if (!this.isKingCheck(simulatedBoard1, king.color)) {
+					const simulatedBoard2 = board.map(row => row.map(square => (square ? { ...square } : null)));
+					const kingStep2 = simulatedBoard2[king.row]![king.col];
+
+					if (kingStep2) {
+						this.applyMove(simulatedBoard2, kingStep2, start, [row, 6]);
+
+						if (!this.isKingCheck(simulatedBoard2, king.color)) {
+							moves.push([row, 6]);
+						}
+					}
+				}
+			}
+		}
+
+		// lange Rochade
+		const queensideRook = board[row]![0];
+		if (
+			queensideRook &&
+			queensideRook.type === "rook" &&
+			queensideRook.color === king.color &&
+			queensideRook.isFirstMove &&
+			board[row]![1] === null &&
+			board[row]![2] === null &&
+			board[row]![3] === null
+		) {
+			const simulatedBoard1 = board.map(row => row.map(square => (square ? { ...square } : null)));
+			const kingStep1 = simulatedBoard1[king.row]![king.col];
+
+			if (kingStep1) {
+				this.applyMove(simulatedBoard1, kingStep1, start, [row, 3]);
+
+				if (!this.isKingCheck(simulatedBoard1, king.color)) {
+					const simulatedBoard2 = board.map(row => row.map(square => (square ? { ...square } : null)));
+					const kingStep2 = simulatedBoard2[king.row]![king.col];
+
+					if (kingStep2) {
+						this.applyMove(simulatedBoard2, kingStep2, start, [row, 2]);
+
+						if (!this.isKingCheck(simulatedBoard2, king.color)) {
+							moves.push([row, 2]);
+						}
+					}
+				}
+			}
+		}
 	}
 
 	private checkForPin(board: Board, piece: Piece, possibleMoves: Square[], currentPlayer: 'white' | 'black'): Square[] {
@@ -244,7 +333,7 @@ export class MoveEngine {
 			const simulatedBoard = board.map(row => row.map(square => square ? { ...square } : null));
 			const simulatedPiece = simulatedBoard[piece.row]![piece.col]!;
 			this.applyMove(simulatedBoard, simulatedPiece, [piece.row, piece.col], move);
-			
+
 			if(!this.isKingCheck(simulatedBoard, currentPlayer)) {
 				legalMoves.push(move);
 			}
@@ -259,21 +348,60 @@ export class MoveEngine {
 		start: Target,
 		end: Destination
 	): void {
-
 		const targetSquare = board[end[0]]![end[1]];
+		const isCastling = piece.type === "king" && Math.abs(end[1] - start[1]) === 2;
 
-		if (piece.type === "pawn" && start[1] !== end[1] && targetSquare === null
-		) {
-			console.log("En passant");
-			board[start[0]]![end[1]] = null;
+		// en passant
+		if (piece.type === "pawn" && start[1] !== end[1] && targetSquare === null) {
+
+			const capturedPawn = board[start[0]]![end[1]];
+
+			if (capturedPawn && capturedPawn.type === "pawn" && capturedPawn.color !== piece.color) {
+				console.log("En passant");
+				board[start[0]]![end[1]] = null;
+			}
 		}
 
+		// normal moves
 		board[end[0]]![end[1]] = piece;
 		board[start[0]]![start[1]] = null;
 
 		piece.row = end[0];
 		piece.col = end[1];
 		piece.isFirstMove = false;
+
+		// Castle
+		if (isCastling) {
+			// short castle king f1
+			if (end[1] === 6) {
+				const rook = board[end[0]]![7];
+
+				if (!rook || rook.type !== "rook") {
+					throw new Error("Kingside rook not found for castling");
+				}
+
+				board[end[0]]![5] = rook;
+				board[end[0]]![7] = null;
+				rook.row = end[0];
+				rook.col = 5;
+				rook.isFirstMove = false;
+			}
+
+			// long castle king c1
+			if (end[1] === 2) {
+				const rook = board[end[0]]![0];
+
+				if (!rook || rook.type !== "rook") {
+					throw new Error("Queenside rook not found for castling");
+				}
+
+				board[end[0]]![3] = rook;
+				board[end[0]]![0] = null;
+				rook.row = end[0];
+				rook.col = 3;
+				rook.isFirstMove = false;
+			}
+		}
 	}
 		
 
