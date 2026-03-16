@@ -3,6 +3,14 @@ import type { ForegroundColorName } from "chalk";
 type PieceType = 'pawn' | 'rook' | 'knight' | 'bishop' | 'queen' | 'king';
 type AlgebraicNotationPrefix = ''| 'R' | 'N' | 'B' | 'Q' | 'K';
 
+export const PieceTypeToIcon: Record<PieceType, string> = {
+  pawn: '♙',
+  rook: '♜',
+  knight: '♞',
+  bishop: '♝',
+  queen: '♛',
+  king: '♚',
+};
 
 const notationMap: Record<PieceType, AlgebraicNotationPrefix> = {
 	pawn: '',

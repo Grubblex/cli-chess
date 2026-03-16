@@ -1,5 +1,6 @@
+import prompts from "prompts";
 import type { Board } from "../board.js";
-import type { Piece } from "../pieces.js";
+import { PieceTypeToIcon, type Piece } from "../pieces.js";
 import { bishopDirections, kingMoves, knightMoves, queenDirections, rookDirections } from "./moveSets.js";
 
 type Square = [row: number, col: number];
@@ -25,7 +26,7 @@ export class MoveEngine {
 
 	public moveRecord: string[] = [];
 
-	public move(board: Board, moveString: string, currentPlayer: 'white' | 'black'): Board {
+	public async move(board: Board, moveString: string, currentPlayer: 'white' | 'black'): Promise<Board> {
 
 		const enemyPlayer = currentPlayer === 'white' ? 'black' : 'white' 
 
@@ -35,7 +36,11 @@ export class MoveEngine {
 
 		if (pieceToMove === null) {
 			throw new Error("No piece on target square");
-		}
+		};
+
+		if (pieceToMove.color !== currentPlayer) {
+			throw new Error("You can only move your own pieces");
+		};
 
 		const possibleMoves = this.getPossibleMoves(board, pieceToMove);
 
@@ -57,10 +62,15 @@ export class MoveEngine {
 		}
 
 		this.applyMove(board, pieceToMove, start, end);
-		const kingInCheck = this.isKingCheck(board, enemyPlayer);
 
-		if (kingInCheck) {
-			console.log('King is checked!')
+		await this.checkForPromotion(board, pieceToMove);
+
+		if (this.isCheckmate(board, enemyPlayer)) {
+			console.log(`Checkmate! ${currentPlayer} wins!`);
+		} else if (this.isStalemate(board, enemyPlayer)) {
+			console.log("Stalemate!");
+		} else if (this.isKingCheck(board, enemyPlayer)) {
+			console.log("King is checked!");
 		}
 
 		this.moveRecord.push(moveString);
@@ -90,11 +100,98 @@ export class MoveEngine {
 		return [targetCoordinates, destinationCoordinates]
 	}
 
+	private hasAnyLegalMove(board: Board, player: 'white' | 'black'): boolean {
+		const pieces = board
+			.flat()
+			.filter((square): square is Piece => square !== null && square.color === player);
+
+		for (const piece of pieces) {
+			const possibleMoves = this.getPossibleMoves(board, piece);
+			const legalMoves = this.checkForPin(board, piece, possibleMoves, player);
+
+			if (legalMoves.length > 0) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	private applyMove(
+		board: Board,
+		piece: Piece,
+		start: Target,
+		end: Destination
+	): void {
+		const targetSquare = board[end[0]]![end[1]];
+		const isCastling = piece.type === "king" && Math.abs(end[1] - start[1]) === 2;
+
+		// en passant
+		if (piece.type === "pawn" && start[1] !== end[1] && targetSquare === null) {
+
+			const capturedPawn = board[start[0]]![end[1]];
+
+			if (capturedPawn && capturedPawn.type === "pawn" && capturedPawn.color !== piece.color) {
+				console.log("En passant");
+				board[start[0]]![end[1]] = null;
+			}
+		}
+
+		// normal moves
+		board[end[0]]![end[1]] = piece;
+		board[start[0]]![start[1]] = null;
+
+		piece.row = end[0];
+		piece.col = end[1];
+		piece.isFirstMove = false;
+
+		// Castle
+		if (isCastling) {
+			// short castle king f1
+			if (end[1] === 6) {
+				const rook = board[end[0]]![7];
+
+				if (!rook || rook.type !== "rook") {
+					throw new Error("Kingside rook not found for castling");
+				}
+
+				board[end[0]]![5] = rook;
+				board[end[0]]![7] = null;
+				rook.row = end[0];
+				rook.col = 5;
+				rook.isFirstMove = false;
+			}
+
+			// long castle king c1
+			if (end[1] === 2) {
+				const rook = board[end[0]]![0];
+
+				if (!rook || rook.type !== "rook") {
+					throw new Error("Queenside rook not found for castling");
+				}
+
+				board[end[0]]![3] = rook;
+				board[end[0]]![0] = null;
+				rook.row = end[0];
+				rook.col = 3;
+				rook.isFirstMove = false;
+			}
+		}
+	}
+
+	private isCheckmate(board: Board, player: 'white' | 'black'): boolean {
+		return this.isKingCheck(board, player) && !this.hasAnyLegalMove(board, player);
+	}
+
+	private isStalemate(board: Board, player: 'white' | 'black'): boolean {
+		return !this.isKingCheck(board, player) && !this.hasAnyLegalMove(board, player);
+	}
+
 		private getPossibleMoves(board: Board, piece: Piece): Square[] {
 		switch (piece.type) {
 			case 'pawn':
 				return this.generatePawnMoves(board, piece);
-			case 'knight':
+			case 'knight': 
 				return this.generateKnightMoves(board, piece);
 			case 'bishop':
 				return this.generateSlidingMoves(board, piece, bishopDirections);
@@ -113,6 +210,51 @@ export class MoveEngine {
 		return row >= 0 && row < 8 && col >= 0 && col < 8;
 	}
 
+	private async checkForPromotion(board: Board, piece: Piece) {
+
+		if (piece.type !== 'pawn') return;
+
+		// Pawn erreicht letzte Reihe
+		if (piece.row !== 0 && piece.row !== 7) return;
+
+		while (true) {
+
+			const movePrompt = await prompts({
+				type: 'text',
+				name: 'promotion',
+				message: `PROMOTION [q,r,b,n]`
+			});
+
+			const promotion = movePrompt.promotion?.toLowerCase() || 'q';
+
+			switch (promotion) {
+
+				case 'q':
+					piece.type = 'queen';
+					piece.icon = PieceTypeToIcon['queen'];
+					return;
+
+				case 'r':
+					piece.type = 'rook';
+					piece.icon = PieceTypeToIcon['rook'];
+					return;
+
+				case 'b':
+					piece.type = 'bishop';
+					piece.icon = PieceTypeToIcon['bishop'];
+					return;
+
+				case 'n':
+					piece.type = 'knight';
+					piece.icon = PieceTypeToIcon['knight'];
+					return;
+
+				default:
+					console.log("Invalid promotion. Use q,r,b,n");
+			}
+		}
+	}
+	
 	private generateSlidingMoves(
 		board: Board,
 		piece: Piece,
@@ -341,69 +483,6 @@ export class MoveEngine {
 
 		return legalMoves;
 	}
-
-	private applyMove(
-		board: Board,
-		piece: Piece,
-		start: Target,
-		end: Destination
-	): void {
-		const targetSquare = board[end[0]]![end[1]];
-		const isCastling = piece.type === "king" && Math.abs(end[1] - start[1]) === 2;
-
-		// en passant
-		if (piece.type === "pawn" && start[1] !== end[1] && targetSquare === null) {
-
-			const capturedPawn = board[start[0]]![end[1]];
-
-			if (capturedPawn && capturedPawn.type === "pawn" && capturedPawn.color !== piece.color) {
-				console.log("En passant");
-				board[start[0]]![end[1]] = null;
-			}
-		}
-
-		// normal moves
-		board[end[0]]![end[1]] = piece;
-		board[start[0]]![start[1]] = null;
-
-		piece.row = end[0];
-		piece.col = end[1];
-		piece.isFirstMove = false;
-
-		// Castle
-		if (isCastling) {
-			// short castle king f1
-			if (end[1] === 6) {
-				const rook = board[end[0]]![7];
-
-				if (!rook || rook.type !== "rook") {
-					throw new Error("Kingside rook not found for castling");
-				}
-
-				board[end[0]]![5] = rook;
-				board[end[0]]![7] = null;
-				rook.row = end[0];
-				rook.col = 5;
-				rook.isFirstMove = false;
-			}
-
-			// long castle king c1
-			if (end[1] === 2) {
-				const rook = board[end[0]]![0];
-
-				if (!rook || rook.type !== "rook") {
-					throw new Error("Queenside rook not found for castling");
-				}
-
-				board[end[0]]![3] = rook;
-				board[end[0]]![0] = null;
-				rook.row = end[0];
-				rook.col = 3;
-				rook.isFirstMove = false;
-			}
-		}
-	}
-		
 
 	private isAttackedBySlidingPiece(
 		board: Board,

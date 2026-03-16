@@ -91,7 +91,7 @@ async function main() {
 		if (!move) continue;
 
 		try {
-			board = moveEngine.move(board, move, currentPlayer);
+			board = await moveEngine.move(board, move, currentPlayer);
 			engine.updateBoard(board);
 
 			// Spieler wechseln
