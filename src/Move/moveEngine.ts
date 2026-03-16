@@ -8,6 +8,11 @@ type Square = [row: number, col: number];
 type Target = Square;
 type Destination = Square;
 type Move = [Target, Destination];
+type MoveResult = {
+	isCapture: boolean;
+	isCastling: boolean;
+	isEnPassant: boolean;
+};
 
 type MoveSet = [x: number, y: number][];
 
@@ -38,10 +43,12 @@ export class MoveEngine {
 		const destinationSquare = board[end[0]]?.[end[1]] ?? null;
 
 		if (pieceToMove === null) {
+			this.audio.play('illegal');
 			throw new Error("No piece on target square");
 		};
 
 		if (pieceToMove.color !== currentPlayer) {
+			this.audio.play('illegal');
 			throw new Error("You can only move your own pieces");
 		};
 
@@ -55,6 +62,7 @@ export class MoveEngine {
 		);
 
 		if (!isValid) {
+			this.audio.play('illegal');
 			throw new Error("Illegal move");
 		}
 
@@ -64,17 +72,30 @@ export class MoveEngine {
 			);
 		}
 
-		this.applyMove(board, pieceToMove, start, end);
+		const moveResult = this.applyMove(board, pieceToMove, start, end);
 		this.moveRecord.push(moveString);
 
 		await this.checkForPromotion(board, pieceToMove);
 
-		if (this.isCheckmate(board, enemyPlayer)) {
+		const isMate = this.isCheckmate(board, enemyPlayer);
+		const isStalemate = this.isStalemate(board, enemyPlayer);
+		const isCheck = this.isKingCheck(board, enemyPlayer);
+
+		if (isMate) {
 			console.log(`Checkmate! ${currentPlayer} wins!`);
-		} else if (this.isStalemate(board, enemyPlayer)) {
+			this.audio.gameEnd();
+		} else if (isStalemate) {
 			console.log("Stalemate!");
-		} else if (this.isKingCheck(board, enemyPlayer)) {
+			this.audio.notify();
+		} else if (isCheck) {
 			console.log("King is checked!");
+			this.audio.check();
+		} else if (moveResult.isCastling) {
+			this.audio.castle();
+		} else if (moveResult.isCapture) {
+			this.audio.capture();
+		} else {
+			this.audio.move();
 		}
 
 		console.log(this.moveRecord);
@@ -123,19 +144,18 @@ export class MoveEngine {
 		board: Board,
 		piece: Piece,
 		start: Target,
-		end: Destination,
-		playSound = true
-	): void {
+		end: Destination
+	): MoveResult {
 		const targetSquare = board[end[0]]![end[1]];
 		const isCastling = piece.type === "king" && Math.abs(end[1] - start[1]) === 2;
 		const isEnPassant = this.isEnPassantMove(board, piece, start, end);
-		const isCapture = (targetSquare !== null && targetSquare!.color !== piece.color) || isEnPassant;
+		const isCapture =
+			(targetSquare !== null && targetSquare!.color !== piece.color) || isEnPassant;
 
 		if (isEnPassant) {
 			board[start[0]]![end[1]] = null;
 		}
 
-		// normal move
 		board[end[0]]![end[1]] = piece;
 		board[start[0]]![start[1]] = null;
 
@@ -143,25 +163,12 @@ export class MoveEngine {
 		piece.col = end[1];
 		piece.isFirstMove = false;
 
-		if (playSound) {
-			if (isCastling) {
-				this.audio.castle();
-			} else if (isCapture) {
-				this.audio.capture();
-			} else {
-				this.audio.move();
-			}
-		}
-
-		// castle
 		if (isCastling) {
 			if (end[1] === 6) {
 				const rook = board[end[0]]![7];
-
 				if (!rook || rook.type !== "rook") {
 					throw new Error("Kingside rook not found for castling");
 				}
-
 				board[end[0]]![5] = rook;
 				board[end[0]]![7] = null;
 				rook.row = end[0];
@@ -171,11 +178,9 @@ export class MoveEngine {
 
 			if (end[1] === 2) {
 				const rook = board[end[0]]![0];
-
 				if (!rook || rook.type !== "rook") {
 					throw new Error("Queenside rook not found for castling");
 				}
-
 				board[end[0]]![3] = rook;
 				board[end[0]]![0] = null;
 				rook.row = end[0];
@@ -183,6 +188,12 @@ export class MoveEngine {
 				rook.isFirstMove = false;
 			}
 		}
+
+		return {
+			isCapture,
+			isCastling,
+			isEnPassant,
+		};
 	}
 
 	private isCheckmate(board: Board, player: 'white' | 'black'): boolean {
@@ -263,21 +274,25 @@ export class MoveEngine {
 				case 'q':
 					piece.type = 'queen';
 					piece.icon = PieceTypeToIcon['queen'];
+					this.audio.play('promote')
 					return;
 
 				case 'r':
 					piece.type = 'rook';
 					piece.icon = PieceTypeToIcon['rook'];
+					this.audio.play('promote')
 					return;
 
 				case 'b':
 					piece.type = 'bishop';
 					piece.icon = PieceTypeToIcon['bishop'];
+					this.audio.play('promote')
 					return;
 
 				case 'n':
 					piece.type = 'knight';
 					piece.icon = PieceTypeToIcon['knight'];
+					this.audio.play('promote')
 					return;
 
 				default:
@@ -439,14 +454,14 @@ export class MoveEngine {
 			const kingStep1 = simulatedBoard1[king.row]![king.col];
 
 			if (kingStep1) {
-				this.applyMove(simulatedBoard1, kingStep1, start, [row, 5], false);
+				this.applyMove(simulatedBoard1, kingStep1, start, [row, 5]);
 
 				if (!this.isKingCheck(simulatedBoard1, king.color)) {
 					const simulatedBoard2 = board.map(row => row.map(square => (square ? { ...square } : null)));
 					const kingStep2 = simulatedBoard2[king.row]![king.col];
 
 					if (kingStep2) {
-						this.applyMove(simulatedBoard2, kingStep2, start, [row, 6], false);
+						this.applyMove(simulatedBoard2, kingStep2, start, [row, 6]);
 
 						if (!this.isKingCheck(simulatedBoard2, king.color)) {
 							moves.push([row, 6]);
@@ -471,14 +486,14 @@ export class MoveEngine {
 			const kingStep1 = simulatedBoard1[king.row]![king.col];
 
 			if (kingStep1) {
-				this.applyMove(simulatedBoard1, kingStep1, start, [row, 3], false);
+				this.applyMove(simulatedBoard1, kingStep1, start, [row, 3]);
 
 				if (!this.isKingCheck(simulatedBoard1, king.color)) {
 					const simulatedBoard2 = board.map(row => row.map(square => (square ? { ...square } : null)));
 					const kingStep2 = simulatedBoard2[king.row]![king.col];
 
 					if (kingStep2) {
-						this.applyMove(simulatedBoard2, kingStep2, start, [row, 2], false);
+						this.applyMove(simulatedBoard2, kingStep2, start, [row, 2]);
 
 						if (!this.isKingCheck(simulatedBoard2, king.color)) {
 							moves.push([row, 2]);
@@ -497,7 +512,7 @@ export class MoveEngine {
 
 			const simulatedBoard = board.map(row => row.map(square => square ? { ...square } : null));
 			const simulatedPiece = simulatedBoard[piece.row]![piece.col]!;
-			this.applyMove(simulatedBoard, simulatedPiece, [piece.row, piece.col], move, false);
+			this.applyMove(simulatedBoard, simulatedPiece, [piece.row, piece.col], move);
 
 			if(!this.isKingCheck(simulatedBoard, currentPlayer)) {
 				legalMoves.push(move);
